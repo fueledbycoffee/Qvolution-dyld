@@ -107,6 +107,13 @@
 	#include <libamfi.h>
 #endif
 
+#ifdef DARLING
+#include <darling/emulation/common/i386-startup.h>
+#define I386_SIM_STAGE(stage) DARLING_I386_STARTUP_STAGE(startupRecords, stage)
+#else
+#define I386_SIM_STAGE(stage) ((void)0)
+#endif
+
 #include <sandbox.h>
 #include <sandbox/private.h>
 #if __has_feature(ptrauth_calls)
@@ -5592,6 +5599,10 @@ static const char* useSimulatorDyld(int fd, const macho_header* mainExecutableMH
 								int argc, const char* argv[], const char* envp[], const char* apple[],
 								uintptr_t* startGlue, uintptr_t* mainAddr)
 {
+#ifdef DARLING
+	const int startupRecords = darling_i386_startup_enabled(envp);
+#endif
+	I386_SIM_STAGE("dyld-simulator-enter");
 	*startGlue = 0;
 	*mainAddr = 0;
 
@@ -5608,13 +5619,25 @@ static const char* useSimulatorDyld(int fd, const macho_header* mainExecutableMH
 
 	// get file size of dyld_sim
 	struct stat sb;
-	if ( fstat(fd, &sb) == -1 )
+	I386_SIM_STAGE("dyld-simulator-stat-enter");
+	if ( fstat(fd, &sb) == -1 ) {
+		I386_SIM_STAGE("dyld-simulator-stat-error");
 		return "stat(dyld_sim) failed";
+	}
+	I386_SIM_STAGE("dyld-simulator-stat-return");
 
 	// read first page of dyld_sim file
 	uint8_t firstPage[4096];
-	if ( pread(fd, firstPage, 4096, 0) != 4096 )
+	I386_SIM_STAGE("dyld-simulator-pread-zero-enter");
+	ssize_t firstRead = pread(fd, firstPage, 4096, 0);
+	if ( firstRead != 4096 ) {
+		if ( firstRead < 0 )
+			I386_SIM_STAGE("dyld-simulator-pread-zero-error");
+		else
+			I386_SIM_STAGE("dyld-simulator-pread-zero-short");
 		return "pread(dyld_sim) failed";
+	}
+	I386_SIM_STAGE("dyld-simulator-pread-zero-return");
 
 	// if fat file, pick matching slice
 	uint64_t fileOffset = 0;
@@ -5624,8 +5647,12 @@ static const char* useSimulatorDyld(int fd, const macho_header* mainExecutableMH
 		if ( !fatFindBest(fileStartAsFat, &fileOffset, &fileLength) ) 
 			return "no matching arch in dyld_sim";
 		// re-read buffer from start of mach-o slice in fat file
-		if ( pread(fd, firstPage, 4096, fileOffset) != 4096 )
+		I386_SIM_STAGE("dyld-simulator-pread-slice-enter");
+		if ( pread(fd, firstPage, 4096, fileOffset) != 4096 ) {
+			I386_SIM_STAGE("dyld-simulator-pread-slice-failed");
 			return "pread(dyld_sim) failed";
+		}
+		I386_SIM_STAGE("dyld-simulator-pread-slice-return");
 	}
 	else if ( !isCompatibleMachO(firstPage, dyldPath, fd, fileOffset, fileLength) ) {
 		return "dyld_sim is not compatible with the loaded process, likely due to architecture mismatch";
@@ -6553,6 +6580,10 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 		int argc, const char* argv[], const char* envp[], const char* apple[], 
 		uintptr_t* startGlue)
 {
+#ifdef DARLING
+	const int startupRecords = darling_i386_startup_enabled(envp);
+#endif
+	I386_SIM_STAGE("dyld-main-enter");
 	DYLD_LOG("dyld _main started! argc=%d argv[0]=%s\n", argc, argv[0] ? argv[0] : "(null)");
 	if (dyld3::kdebug_trace_dyld_enabled(DBG_DYLD_TIMING_LAUNCH_EXECUTABLE)) {
 		launchTraceID = dyld3::kdebug_trace_dyld_duration_start(DBG_DYLD_TIMING_LAUNCH_EXECUTABLE, (uint64_t)mainExecutableMH, 0, 0);
@@ -6641,11 +6672,23 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 	// if this is host dyld, check to see if iOS simulator is being run
 	const char* rootPath = _simple_getenv(envp, "DYLD_ROOT_PATH");
 	if ( (rootPath != NULL) ) {
+		I386_SIM_STAGE("dyld-root-present");
 		// look to see if simulator has its own dyld
 		char simDyldPath[PATH_MAX]; 
 		strlcpy(simDyldPath, rootPath, PATH_MAX);
 		strlcat(simDyldPath, "/usr/lib/dyld_sim", PATH_MAX);
+		I386_SIM_STAGE("dyld-simulator-open-enter");
 		int fd = dyld3::open(simDyldPath, O_RDONLY, 0);
+		if ( fd == -1 ) {
+			if ( errno == ENOENT )
+				I386_SIM_STAGE("dyld-simulator-open-missing");
+			else
+				I386_SIM_STAGE("dyld-simulator-open-error");
+		}
+		else if ( fd < 0 )
+			I386_SIM_STAGE("dyld-simulator-open-raw-error");
+		else
+			I386_SIM_STAGE("dyld-simulator-open-success");
 		if ( fd != -1 ) {
 			const char* errMessage = useSimulatorDyld(fd, mainExecutableMH, simDyldPath, argc, argv, envp, apple, startGlue, &result);
 			if ( errMessage != NULL )
@@ -6661,6 +6704,7 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide,
 	}
 #endif
 
+	I386_SIM_STAGE("dyld-simulator-check-return");
 	CRSetCrashLogMessage("dyld: launch started");
 
 	setContext(mainExecutableMH, argc, argv, envp, apple);
