@@ -34,6 +34,9 @@
 #include "dyldSyscallInterface.h"
 #include "MachOAnalyzer.h"
 #include "Tracing.h"
+#ifdef DARLING
+#include <darling/emulation/common/i386-startup.h>
+#endif
 
 // from libc.a
 #ifdef DARLING
@@ -130,6 +133,10 @@ extern "C" void sigexc_setup(void);
 uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char* argv[],
 				const dyld3::MachOLoaded* dyldsMachHeader, uintptr_t* startGlue)
 {
+#ifdef DARLING
+    int startupRecords = darling_i386_startup_enabled(&argv[argc+1]);
+    DARLING_I386_STARTUP_STAGE(startupRecords, "dyld-bootstrap-enter");
+#endif
     // Emit kdebug tracepoint to indicate dyld bootstrap has started <rdar://46878536>
     dyld3::kdebug_trace_dyld_marker(DBG_DYLD_TIMING_BOOTSTRAP_START, 0, 0, 0, 0);
 
@@ -148,14 +155,18 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char* 
 	++apple;
 
 #ifdef DARLING
+    DARLING_I386_STARTUP_STAGE(startupRecords, "dyld-rebase-enter");
     rebaseDyld(dyldsMachHeader, apple);
+    DARLING_I386_STARTUP_STAGE(startupRecords, "dyld-rebase-return");
 #endif
 
 	// set up random value for stack canary
 	__guard_setup(apple);
 
 #ifdef DARLING
+	DARLING_I386_STARTUP_STAGE(startupRecords, "dyld-sigexc-enter");
 	sigexc_setup();
+	DARLING_I386_STARTUP_STAGE(startupRecords, "dyld-sigexc-return");
 #endif
 #if DYLD_INITIALIZER_SUPPORT
 	// run all C++ initializers inside dyld
